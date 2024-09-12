@@ -1,11 +1,12 @@
 // @ts-nocheck
 "use client"
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { createClient } from '@supabase/supabase-js'
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Slider } from "@/components/ui/slider"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { toast, Toaster } from 'react-hot-toast'
 import {
   Dialog,
   DialogContent,
@@ -16,8 +17,13 @@ import {
 import { Label } from "@/components/ui/label"
 import { PlayIcon, PauseIcon, SkipBackIcon, SkipForwardIcon, ShuffleIcon, RepeatIcon, VolumeIcon, Volume2Icon, HeartIcon, StarIcon, PlusCircleIcon } from "lucide-react"
 
-// Initialize Supabase client
-const supabase = createClient('YOUR_SUPABASE_URL', 'YOUR_SUPABASE_ANON_KEY')
+// Initialize Supabase client with options to bypass RLS
+const supabase = createClient('https://asizzpgwsulhuhofqwwt.supabase.co', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFzaXp6cGd3c3VsaHVob2Zxd3d0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MjYxNDE3MzgsImV4cCI6MjA0MTcxNzczOH0.9tPyIZg2gqeJY_6w-obqtqjhQEMSJDPN1oNXWQDghbI', {
+  auth: {
+    persistSession: false,
+    autoRefreshToken: false,
+  },
+})
 
 const StarRating = ({ rating }) => {
   const fullStars = Math.floor(rating)
@@ -42,11 +48,11 @@ const StarRating = ({ rating }) => {
 }
 
 const MusicVisualization = () => (
-  <div className="flex items-end justify-center space-x-1 h-16">
+  <div className="flex items-end justify-center space-x-1 h-16 absolute bottom-0 left-0 right-0">
     {[...Array(20)].map((_, i) => (
       <div
         key={i}
-        className="w-1 bg-primary"
+        className="w-1 bg-primary opacity-75"
         style={{
           height: `${Math.random() * 100}%`,
           animation: `visualizer 0.5s infinite alternate ${i * 0.1}s`,
@@ -61,19 +67,49 @@ const AddMusicDialog = ({ onAddMusic }) => {
   const [artist, setArtist] = useState('')
   const [album, setAlbum] = useState('')
   const [duration, setDuration] = useState('')
+  const [audioFile, setAudioFile] = useState(null)
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-    const newTrack = { title, artist, album, duration, likes: 0, rating: 0 }
-    const { data, error } = await supabase.from('tracks').insert(newTrack)
-    if (error) {
-      console.error('Error adding track:', error)
-    } else {
+    if (!audioFile) {
+      toast.error('Please upload an audio file')
+      return
+    }
+
+    try {
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('musics')
+        .upload(`${Date.now()}_${audioFile.name}`, audioFile)
+
+      if (uploadError) throw uploadError
+
+      const { data: publicUrlData } = supabase.storage
+        .from('musics')
+        .getPublicUrl(uploadData.path)
+
+      const newTrack = { 
+        title, 
+        artist, 
+        album, 
+        duration, 
+        likes: 0, 
+        rating: 0,
+        audio_url: publicUrlData.publicUrl
+      }
+
+      const { data, error } = await supabase.from('tracks').insert(newTrack)
+      if (error) throw error
+
       onAddMusic(data[0])
+      toast.success('Track added successfully')
       setTitle('')
       setArtist('')
       setAlbum('')
       setDuration('')
+      setAudioFile(null)
+    } catch (error) {
+      console.error('Error adding track:', error)
+      toast.error(`Error adding track: ${error.message}`)
     }
   }
 
@@ -106,6 +142,10 @@ const AddMusicDialog = ({ onAddMusic }) => {
             <Label htmlFor="duration">Duration</Label>
             <Input id="duration" value={duration} onChange={(e) => setDuration(e.target.value)} placeholder="3:30" required />
           </div>
+          <div>
+            <Label htmlFor="audio">Audio File</Label>
+            <Input id="audio" type="file" accept="audio/*" onChange={(e) => setAudioFile(e.target.files[0])} required />
+          </div>
           <Button type="submit">Add Track</Button>
         </form>
       </DialogContent>
@@ -121,46 +161,85 @@ export function EnhancedMusicPlayer() {
   const [comment, setComment] = useState("")
   const [comments, setComments] = useState([])
   const [isLiked, setIsLiked] = useState(false)
+  const [progress, setProgress] = useState(0)
+  const audioRef = useRef(new Audio())
 
   useEffect(() => {
     fetchTracks()
   }, [])
 
+  useEffect(() => {
+    if (currentTrack) {
+      audioRef.current.src = currentTrack.audio_url
+      audioRef.current.volume = volume / 100
+      if (isPlaying) {
+        audioRef.current.play()
+      }
+    }
+  }, [currentTrack, isPlaying, volume])
+
+  useEffect(() => {
+    const audio = audioRef.current
+    const updateProgress = () => {
+      const duration = audio.duration
+      const currentTime = audio.currentTime
+      setProgress((currentTime / duration) * 100)
+    }
+    audio.addEventListener('timeupdate', updateProgress)
+    return () => audio.removeEventListener('timeupdate', updateProgress)
+  }, [])
+
   const fetchTracks = async () => {
-    const { data, error } = await supabase.from('tracks').select('*')
-    if (error) {
-      console.error('Error fetching tracks:', error)
-    } else {
+    try {
+      const { data, error } = await supabase.from('tracks').select('*')
+      if (error) throw error
       setPlaylist(data)
       if (data.length > 0 && !currentTrack) {
         setCurrentTrack(data[0])
       }
+    } catch (error) {
+      console.error('Error fetching tracks:', error)
+      toast.error(`Error fetching tracks: ${error.message}`)
     }
   }
 
-  const togglePlayPause = () => setIsPlaying(!isPlaying)
+  const togglePlayPause = () => {
+    if (isPlaying) {
+      audioRef.current.pause()
+    } else {
+      audioRef.current.play()
+    }
+    setIsPlaying(!isPlaying)
+  }
   
   const toggleLike = async () => {
-    const newLikeStatus = !isLiked
-    setIsLiked(newLikeStatus)
-    const { error } = await supabase
-      .from('tracks')
-      .update({ likes: currentTrack.likes + (newLikeStatus ? 1 : -1) })
-      .eq('id', currentTrack.id)
-    if (error) {
+    try {
+      const newLikeStatus = !isLiked
+      setIsLiked(newLikeStatus)
+      const { error } = await supabase
+        .from('tracks')
+        .update({ likes: currentTrack.likes + (newLikeStatus ? 1 : -1) })
+        .eq('id', currentTrack.id)
+      if (error) throw error
+      toast.success(newLikeStatus ? 'Track liked!' : 'Track unliked')
+    } catch (error) {
       console.error('Error updating likes:', error)
+      toast.error(`Error updating likes: ${error.message}`)
     }
   }
 
   const addComment = async () => {
     if (comment.trim()) {
-      const newComment = { text: comment, trackId: currentTrack.id }
-      const { data, error } = await supabase.from('comments').insert(newComment)
-      if (error) {
-        console.error('Error adding comment:', error)
-      } else {
+      try {
+        const newComment = { text: comment, track_id: currentTrack.id }
+        const { data, error } = await supabase.from('comments').insert(newComment)
+        if (error) throw error
         setComments([...comments, data[0]])
         setComment("")
+        toast.success('Comment added')
+      } catch (error) {
+        console.error('Error adding comment:', error)
+        toast.error(`Error adding comment: ${error.message}`)
       }
     }
   }
@@ -169,8 +248,15 @@ export function EnhancedMusicPlayer() {
     setPlaylist([...playlist, newTrack])
   }
 
+  const formatTime = (time) => {
+    const minutes = Math.floor(time / 60)
+    const seconds = Math.floor(time % 60)
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`
+  }
+
   return (
     <div className="flex h-screen bg-background text-foreground">
+      <Toaster />
       {/* Sidebar / Playlist */}
       <aside className="w-80 border-r border-border">
         <div className="p-4 border-b border-border">
@@ -270,9 +356,23 @@ export function EnhancedMusicPlayer() {
             {/* Progress bar and volume control */}
             <div className="p-4 border-t border-border">
               <div className="flex items-center mb-4">
-                <span className="text-sm text-muted-foreground w-12">0:00</span>
-                <Slider className="flex-1 mx-4" defaultValue={[0]} max={100} step={1} />
-                <span className="text-sm text-muted-foreground w-12 text-right">{currentTrack.duration}</span>
+                <span className="text-sm text-muted-foreground w-12">
+                  {formatTime(audioRef.current.currentTime)}
+                </span>
+                <Slider
+                  className="flex-1 mx-4"
+                  value={[progress]}
+                  max={100}
+                  step={1}
+                  onValueChange={(value) => {
+                    const newTime = (value[0] / 100) * audioRef.current.duration
+                    audioRef.current.currentTime = newTime
+                    setProgress(value[0])
+                  }}
+                />
+                <span className="text-sm text-muted-foreground w-12 text-right">
+                  {formatTime(audioRef.current.duration)}
+                </span>
               </div>
               <div className="flex items-center">
                 <VolumeIcon className="h-5 w-5 text-muted-foreground mr-2" />
@@ -281,7 +381,10 @@ export function EnhancedMusicPlayer() {
                   defaultValue={[volume]}
                   max={100}
                   step={1}
-                  onValueChange={(value) => setVolume(value[0])}
+                  onValueChange={(value) => {
+                    setVolume(value[0])
+                    audioRef.current.volume = value[0] / 100
+                  }}
                 />
                 <Volume2Icon className="h-5 w-5 text-muted-foreground ml-2" />
               </div>

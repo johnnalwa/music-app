@@ -90,3 +90,12 @@ body {
     @apply bg-background text-foreground;
   }
 }
+
+@keyframes visualizer {
+  0% {
+    height: 10%;
+  }
+  100% {
+    height: 100%;
+  }
+}
